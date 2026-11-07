@@ -39,7 +39,7 @@ BASE_POP = BASE.replace("equalizer=f=45:t=q:w=1.0:g=-1", "equalizer=f=45:t=q:w=1
 CHORUS_EXTRA = (
     # 副歌段：不加低音，只加强人声存在感、宽度和密度
     "[d]acrossover=split=150:order=4th[l2][h2];"
-    "[h2]extrastereo=m=1.15:c=false,equalizer=f=3000:t=q:w=1.0:g=1.0[h3];"
+    "[h2]extrastereo=m=1.15:c=false[h3];"
     "[l2][h3]amix=inputs=2:normalize=0,"
     "acompressor=threshold=-24dB:ratio=4:attack=10:release=150:makeup=3:knee=4:mix=0.3")
 
@@ -91,6 +91,40 @@ def make_mask(n, segs, attack=0.12, release=1.0, pre=0.35):
         mk[r0:r1] = np.maximum(mk[r0:r1], 0.5 + 0.5 * np.cos(np.linspace(0, np.pi, r1 - r0)))
     return mk
 
+def deharsh(x, lo=2000.0, hi=5000.0, pct=92.0, ratio=3.0, max_cut=6.0, att=0.005, rel=0.12):
+    """动态 EQ：只在 lo-hi（人声刺耳区）能量明显高于平时时才压，平时不动。
+    阈值 = 响段里该频段能量的 pct 百分位；超出部分按 ratio 压缩，最多压 max_cut dB。"""
+    N, H = 2048, 512
+    win = np.hanning(N + 1)[:-1]
+    n = len(x); pad = np.zeros((N, 2)); xp = np.vstack([pad, x, pad])
+    nfr = (len(xp) - N) // H + 1
+    f = np.fft.rfftfreq(N, 1 / SR)
+    band = (f >= lo) & (f < hi)
+    # 频率上平滑过渡的权重（避免硬切）
+    wgt = np.clip(np.minimum((f - lo * 0.7) / (lo * 0.3), (hi * 1.3 - f) / (hi * 0.3)), 0, 1)
+    E = np.empty(nfr); T = np.empty(nfr)
+    for i in range(nfr):
+        fr = xp[i * H:i * H + N].mean(1) * win
+        P = np.abs(np.fft.rfft(fr)) ** 2
+        E[i] = 10 * np.log10(P[band].sum() + 1e-15); T[i] = 10 * np.log10(P.sum() + 1e-15)
+    loud = T > np.percentile(T, 50)
+    thr = np.percentile(E[loud], pct)
+    gr = np.clip((E - thr) * (1 - 1 / ratio), 0, max_cut)  # 需要压掉的 dB
+    # 起音/释放平滑
+    fps = SR / H; a = np.exp(-1 / (att * fps)); r = np.exp(-1 / (rel * fps)); g = np.empty_like(gr); s_ = 0.0
+    for i, v in enumerate(gr):
+        s_ = a * s_ + (1 - a) * v if v > s_ else r * s_ + (1 - r) * v; g[i] = s_
+    out = np.zeros_like(xp); norm = np.zeros(len(xp))
+    for i in range(nfr):
+        seg = xp[i * H:i * H + N] * win[:, None]
+        S = np.fft.rfft(seg, axis=0)
+        S *= (10 ** (-g[i] * wgt / 20))[:, None]
+        out[i * H:i * H + N] += np.fft.irfft(S, N, axis=0) * win[:, None]
+        norm[i * H:i * H + N] += win ** 2
+    out /= np.maximum(norm, 1e-8)[:, None]
+    print(f"去刺耳：阈值以上最多压 {g.max():.1f} dB，压缩 >1dB 的时间 {np.mean(g > 1) * 100:.1f}%", file=sys.stderr)
+    return out[N:N + n]
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("inp"); ap.add_argument("out")
@@ -99,6 +133,7 @@ def main():
     ap.add_argument("--preset", choices=["dubstep", "pop"], default="dubstep",
                     help="dubstep：Drop 加低音饱和与超低频；pop：副歌只加强人声、宽度与密度")
     ap.add_argument("--release", type=float, default=80, help="限制器释放时间 ms；低音重的歌用 150-200 更柔和、不易失真")
+    ap.add_argument("--deharsh", type=float, default=0, help="动态压人声刺耳区（2-5kHz），值为最多压多少 dB；0 关闭。高音人声发炸时用 4-6")
     ap.add_argument("--margin", type=float, default=6.0, help="Drop 判定：比全曲最响处低多少 dB 以内（越小越严格）")
     a = ap.parse_args()
     with tempfile.TemporaryDirectory() as td:
@@ -113,6 +148,8 @@ def main():
         mk = make_mask(n, segs)[:, None]
         g = 10 ** (a.drop_gain / 20)
         mix = base * (1 - mk) + drop * g * mk
+        if a.deharsh:
+            mix = deharsh(mix, max_cut=a.deharsh)
         raw = os.path.join(td, "mix.f32"); mix.astype(np.float32).tofile(raw)
         fin = ["-f", "f32le", "-ar", str(SR), "-ac", "2", "-i", raw]
         r = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", *fin, "-af", "ebur128", "-f", "null", "-"],
