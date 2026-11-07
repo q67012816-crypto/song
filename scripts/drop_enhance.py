@@ -38,7 +38,7 @@ def ff_float(inp, graph, out):
                    check=True)
     return np.fromfile(out, np.float32).reshape(-1, 2).astype(np.float64)
 
-def detect_drops(x, hop=0.25):
+def detect_drops(x, hop=0.25, margin=6.0):
     m = x.mean(1); N = int(SR * 1.0); H = int(SR * hop)
     f = np.fft.rfftfreq(N, 1 / SR); win = np.hanning(N)
     L, B = [], []
@@ -49,7 +49,7 @@ def detect_drops(x, hop=0.25):
     L = np.array(L); B = np.array(B)
     k = int(2 / hop); ker = np.ones(k) / k
     Ls = np.convolve(L, ker, "same"); Bs = np.convolve(B, ker, "same")
-    raw = (Bs > -5.0) & (Ls > np.percentile(Ls, 95) - 6.0)
+    raw = (Bs > -5.0) & (Ls > np.percentile(Ls, 95) - margin)
     # 填补 <3s 的空洞，去掉 <6s 的片段
     seg = raw.copy()
     def runs(a):
@@ -85,13 +85,14 @@ def main():
     ap.add_argument("inp"); ap.add_argument("out")
     ap.add_argument("--target", type=float, default=-10.0)
     ap.add_argument("--drop-gain", type=float, default=2.0)
+    ap.add_argument("--margin", type=float, default=6.0, help="Drop 判定：比全曲最响处低多少 dB 以内（越小越严格）")
     a = ap.parse_args()
     with tempfile.TemporaryDirectory() as td:
         base = ff_float(a.inp, "[0:a]" + BASE, os.path.join(td, "base.f32"))
         drop = ff_float(a.inp, "[0:a]" + BASE + "[d];" + DROP_EXTRA,
                         os.path.join(td, "drop.f32"))
         n = min(len(base), len(drop)); base, drop = base[:n], drop[:n]
-        segs = detect_drops(base)
+        segs = detect_drops(base, margin=a.margin)
         for s, e in segs:
             print(f"Drop: {int(s)//60}:{s%60:05.2f} - {int(e)//60}:{e%60:05.2f}", file=sys.stderr)
         mk = make_mask(n, segs)[:, None]
