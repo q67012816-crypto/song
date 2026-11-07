@@ -34,12 +34,12 @@ DROP_EXTRA = (
 
 # 流行预设（电音流行 / 四拍底鼓）：低音本来就重，重点是把人声推出来
 BASE_POP = BASE.replace("equalizer=f=45:t=q:w=1.0:g=-1", "equalizer=f=45:t=q:w=1.0:g=-2") \
-               .replace("equalizer=f=3200:t=q:w=1.2:g=1.5", "equalizer=f=2800:t=q:w=1.0:g=2.5") \
+               .replace("equalizer=f=3200:t=q:w=1.2:g=1.5", "equalizer=f=2800:t=q:w=1.0:g=1.5") \
                .replace("highshelf=f=10000:g=2.5", "highshelf=f=10000:g=1.5")
 CHORUS_EXTRA = (
     # 副歌段：不加低音，只加强人声存在感、宽度和密度
     "[d]acrossover=split=150:order=4th[l2][h2];"
-    "[h2]extrastereo=m=1.15:c=false,equalizer=f=3000:t=q:w=1.0:g=1.5[h3];"
+    "[h2]extrastereo=m=1.15:c=false,equalizer=f=3000:t=q:w=1.0:g=1.0[h3];"
     "[l2][h3]amix=inputs=2:normalize=0,"
     "acompressor=threshold=-24dB:ratio=4:attack=10:release=150:makeup=3:knee=4:mix=0.3")
 
@@ -98,6 +98,7 @@ def main():
     ap.add_argument("--drop-gain", type=float, default=2.0)
     ap.add_argument("--preset", choices=["dubstep", "pop"], default="dubstep",
                     help="dubstep：Drop 加低音饱和与超低频；pop：副歌只加强人声、宽度与密度")
+    ap.add_argument("--release", type=float, default=80, help="限制器释放时间 ms；低音重的歌用 150-200 更柔和、不易失真")
     ap.add_argument("--margin", type=float, default=6.0, help="Drop 判定：比全曲最响处低多少 dB 以内（越小越严格）")
     a = ap.parse_args()
     with tempfile.TemporaryDirectory() as td:
@@ -121,7 +122,7 @@ def main():
         print(f"pre-limiter I={I:.1f} LUFS, gain={gain:+.1f} dB", file=sys.stderr)
         subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-loglevel", "error", "-y", *fin, "-af",
                         f"volume={gain:.2f}dB,aresample=192000:resampler=soxr,"
-                        "alimiter=limit=0.85:attack=3:release=80:level=false:asc=1,"
+                        f"alimiter=limit=0.85:attack=5:release={a.release}:level=false:asc=1,"
                         "aresample=48000:resampler=soxr:precision=28",
                         "-c:a", "pcm_s24le", a.out], check=True)
 
